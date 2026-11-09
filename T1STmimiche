@@ -1,0 +1,485 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local env = (getgenv and getgenv()) or _G
+
+local TOOL_NAME = "Instantly teleport a short distance"
+local STEAL_WORD = "steal"
+local HOLD_TIME = 1.3
+local ARM_EXTRA = 10
+local MAX_AGE = 2.4
+local MIN_RANGE, MAX_RANGE = 5, 60
+local EQUIP_DELAY = 0.15
+local ACTIVATE_DELAY = 0.1
+
+local savedCFrame: CFrame? = nil
+local leftBaseCFrame: CFrame? = nil
+local autoSteal = false
+local range = 30
+local busy = false
+local holdBusy = false
+
+if env.T1STMimicheCleanup then
+	pcall(env.T1STMimicheCleanup)
+end
+
+local conns = {}
+local function track(c)
+	conns[#conns + 1] = c
+	return c
+end
+
+local playerGui = player:WaitForChild("PlayerGui")
+local old = playerGui:FindFirstChild("T1STMimicheGui")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "T1STMimicheGui"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+gui.Parent = playerGui
+
+env.T1STMimicheCleanup = function()
+	autoSteal = false
+	for _, c in ipairs(conns) do
+		pcall(function() c:Disconnect() end)
+	end
+	table.clear(conns)
+	if gui then gui:Destroy() end
+end
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.fromOffset(60, 36)
+toggleBtn.Position = UDim2.new(0, 10, 0.5, -18)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 14
+toggleBtn.Text = "TP"
+toggleBtn.Parent = gui
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(220, 260)
+main.Position = UDim2.new(0, 80, 0.5, -130)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+main.Visible = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundTransparency = 1
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.Text = "T1ST MIMICHE"
+title.Parent = main
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -16, 1, -40)
+scroll.Position = UDim2.fromOffset(8, 34)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.CanvasSize = UDim2.new()
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+scroll.Parent = main
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = scroll
+
+local function makeButton(text: string, order: number): TextButton
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 36)
+	b.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 14
+	b.Text = text
+	b.LayoutOrder = order
+	b.Parent = scroll
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+	return b
+end
+
+local saveBtn = makeButton("Save Spot", 1)
+local tpBtn = makeButton("Flash TP", 2)
+local saveLeftBtn = makeButton("Save Left Base", 3)
+local tpLeftBtn = makeButton("TP Left Base", 4)
+local stealBtn = makeButton("Auto Steal: OFF", 5)
+
+local rangeRow = Instance.new("Frame")
+rangeRow.Size = UDim2.new(1, -6, 0, 36)
+rangeRow.BackgroundTransparency = 1
+rangeRow.LayoutOrder = 6
+rangeRow.Parent = scroll
+
+local function rangeButton(text: string, xScale: number): TextButton
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0.25, -4, 1, 0)
+	b.Position = UDim2.new(xScale, 0, 0, 0)
+	b.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.Text = text
+	b.Parent = rangeRow
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+	return b
+end
+
+local rangeMinus = rangeButton("-", 0)
+local rangePlus = rangeButton("+", 0.75)
+
+local rangeLabel = Instance.new("TextLabel")
+rangeLabel.Size = UDim2.new(0.5, 0, 1, 0)
+rangeLabel.Position = UDim2.new(0.25, 0, 0, 0)
+rangeLabel.BackgroundTransparency = 1
+rangeLabel.TextColor3 = Color3.new(1, 1, 1)
+rangeLabel.Font = Enum.Font.Gotham
+rangeLabel.TextSize = 13
+rangeLabel.Text = "Range: " .. range
+rangeLabel.Parent = rangeRow
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -6, 0, 40)
+status.BackgroundTransparency = 1
+status.TextColor3 = Color3.fromRGB(180, 180, 190)
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextWrapped = true
+status.Text = "Ready."
+status.LayoutOrder = 7
+status.Parent = scroll
+
+local function setStatus(t: string)
+	status.Text = t
+end
+
+local function getChar()
+	local char = player.Character
+	if not char then return nil end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hrp and hum and hum.Health > 0 then
+		return char, hrp, hum
+	end
+	return nil
+end
+
+local function safe(fn: () -> ())
+	local ok, err = pcall(fn)
+	if not ok then
+		busy = false
+		setStatus("Error: " .. tostring(err))
+	end
+end
+
+local function isCarrying(): boolean
+	local v = player:GetAttribute("Stealing")
+	return v ~= nil and v ~= false
+end
+
+saveBtn.Activated:Connect(function()
+	safe(function()
+		local _, hrp = getChar()
+		if not hrp then return setStatus("No character.") end
+		savedCFrame = hrp.CFrame
+		setStatus("Saved. Position and facing stored.")
+	end)
+end)
+
+tpBtn.Activated:Connect(function()
+	if busy then return end
+	safe(function()
+		if not savedCFrame then return setStatus("Save a spot first.") end
+		local char, hrp, hum = getChar()
+		if not char then return setStatus("No character.") end
+
+		busy = true
+		char:PivotTo(savedCFrame)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		task.wait(EQUIP_DELAY)
+
+		local tool = player.Backpack:FindFirstChild(TOOL_NAME) or char:FindFirstChild(TOOL_NAME)
+		if not tool or not tool:IsA("Tool") then
+			setStatus("Tool not found: " .. TOOL_NAME)
+			busy = false
+			return
+		end
+
+		if tool.Parent ~= char then
+			hum:EquipTool(tool)
+			task.wait(EQUIP_DELAY)
+		end
+
+		char:PivotTo(savedCFrame)
+		task.wait(ACTIVATE_DELAY)
+		tool:Activate()
+
+		setStatus("Done.")
+		busy = false
+	end)
+end)
+
+saveLeftBtn.Activated:Connect(function()
+	safe(function()
+		local _, hrp = getChar()
+		if not hrp then return setStatus("No character.") end
+		leftBaseCFrame = hrp.CFrame
+		setStatus("Left base saved.")
+	end)
+end)
+
+tpLeftBtn.Activated:Connect(function()
+	safe(function()
+		if not leftBaseCFrame then return setStatus("Save left base first.") end
+		local char, hrp = getChar()
+		if not char then return setStatus("No character.") end
+		char:PivotTo(leftBaseCFrame)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		setStatus("At left base.")
+	end)
+end)
+
+local prompts: { [ProximityPrompt]: boolean } = {}
+
+local function register(inst: Instance)
+	if inst:IsA("ProximityPrompt") then
+		prompts[inst] = true
+	end
+end
+
+track(Workspace.DescendantAdded:Connect(register))
+track(Workspace.DescendantRemoving:Connect(function(inst)
+	if inst:IsA("ProximityPrompt") then
+		prompts[inst] = nil
+	end
+end))
+
+task.spawn(function()
+	local n = 0
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		register(inst)
+		n += 1
+		if n % 1500 == 0 then task.wait() end
+	end
+end)
+
+local function promptPos(prompt: ProximityPrompt): Vector3?
+	local parent = prompt.Parent
+	if not parent then return nil end
+	if parent:IsA("Attachment") then
+		return parent.WorldPosition
+	elseif parent:IsA("BasePart") then
+		return parent.Position
+	elseif parent:IsA("Model") then
+		return parent:GetPivot().Position
+	end
+	local part = parent:FindFirstAncestorWhichIsA("BasePart")
+	return part and part.Position or nil
+end
+
+local function isStealPrompt(prompt: ProximityPrompt): boolean
+	return string.find(string.lower(prompt.ActionText), STEAL_WORD, 1, true) ~= nil
+end
+
+local handlerCache = setmetatable({}, { __mode = "k" })
+
+local function getHandlers(prompt: ProximityPrompt)
+	local cached = handlerCache[prompt]
+	if cached and #cached.trigger > 0 then
+		return cached
+	end
+	local h = { hold = {}, trigger = {} }
+	if typeof(getconnections) == "function" then
+		pcall(function()
+			for _, c in ipairs(getconnections(prompt.PromptButtonHoldBegan)) do
+				local f = c.Function
+				if type(f) == "function" then
+					local src = ""
+					pcall(function() src = debug.info(f, "s") or "" end)
+					if not (src:find("PlotClient", 1, true) and not src:find("AnimalPrompt", 1, true)) then
+						h.hold[#h.hold + 1] = f
+					end
+				end
+			end
+			for _, c in ipairs(getconnections(prompt.Triggered)) do
+				if type(c.Function) == "function" then
+					h.trigger[#h.trigger + 1] = c.Function
+				end
+			end
+		end)
+	end
+	handlerCache[prompt] = h
+	return h
+end
+
+local function plainHold(prompt: ProximityPrompt)
+	if holdBusy or not prompt.Parent then return end
+	holdBusy = true
+	pcall(function() prompt.RequiresLineOfSight = false end)
+	pcall(function() prompt:InputHoldBegin() end)
+	local need = math.max(prompt.HoldDuration, HOLD_TIME) + 0.05
+	local t0 = os.clock()
+	while os.clock() - t0 < need do
+		local _, hrp = getChar()
+		local pos = prompt.Parent and promptPos(prompt)
+		if not hrp or not pos or (pos - hrp.Position).Magnitude > range + 15 or isCarrying() then
+			break
+		end
+		task.wait()
+	end
+	pcall(function() prompt:InputHoldEnd() end)
+	holdBusy = false
+end
+
+local stealList: { ProximityPrompt } = {}
+local listAt = 0
+local bankAt = 0
+local bankPrompt: ProximityPrompt? = nil
+local lastFire = 0
+local lastFallback = 0
+local wasCarrying = false
+
+local function refreshList()
+	table.clear(stealList)
+	for p in pairs(prompts) do
+		if p.Parent and isStealPrompt(p) then
+			stealList[#stealList + 1] = p
+		end
+	end
+end
+
+local function stealTick()
+	local carrying = isCarrying()
+	if carrying ~= wasCarrying then
+		wasCarrying = carrying
+		bankPrompt = nil
+		setStatus(carrying and "Stolen." or "Ready.")
+	end
+
+	if not autoSteal or carrying or holdBusy then
+		if not autoSteal then bankPrompt = nil end
+		return
+	end
+
+	local _, hrp = getChar()
+	if not hrp then return end
+
+	local now = os.clock()
+	if now - listAt > 1 then
+		listAt = now
+		refreshList()
+	end
+
+	local target: ProximityPrompt? = nil
+	local targetDist = math.huge
+	local arm: ProximityPrompt? = nil
+	local armDist = range + ARM_EXTRA
+
+	for _, p in ipairs(stealList) do
+		if p.Parent and p.Enabled then
+			local pos = promptPos(p)
+			if pos then
+				local d = (pos - hrp.Position).Magnitude
+				if d <= armDist then
+					arm, armDist = p, d
+				end
+				if d <= range and d < targetDist then
+					target, targetDist = p, d
+				end
+			end
+		end
+	end
+
+	if not arm then
+		bankPrompt = nil
+		return
+	end
+
+	local h = getHandlers(arm)
+	if #h.hold == 0 or #h.trigger == 0 then
+		if target and now - lastFallback > 0.2 then
+			lastFallback = now
+			task.spawn(plainHold, target)
+		end
+		return
+	end
+
+	local age = bankPrompt and (now - bankAt) or math.huge
+	local eta = 0
+	if not target then
+		local pos = promptPos(arm)
+		local dir = pos and (pos - hrp.Position) or Vector3.zero
+		local toward = dir.Magnitude > 0 and hrp.AssemblyLinearVelocity:Dot(dir.Unit) or 0
+		eta = math.max(armDist - range, 0) / math.max(toward, 8)
+	end
+
+	if bankPrompt == nil or age + eta > MAX_AGE then
+		pcall(function() arm.RequiresLineOfSight = false end)
+		for _, f in ipairs(h.hold) do
+			task.spawn(pcall, f, player)
+		end
+		bankAt, bankPrompt = now, arm
+		age = 0
+	end
+
+	local need = math.max(arm.HoldDuration, HOLD_TIME) + 0.03
+	if not target then
+		setStatus(string.format("Approaching. Hold banked (%d studs).", armDist))
+		return
+	end
+
+	if age >= need and age <= MAX_AGE + 0.3 and now - lastFire >= 0.1 then
+		lastFire = now
+		local th = getHandlers(target)
+		for _, f in ipairs(th.trigger) do
+			task.spawn(pcall, f, player)
+		end
+		local name = target.ObjectText ~= "" and target.ObjectText or "brainrot"
+		setStatus("Grabbing " .. name)
+	end
+end
+
+track(RunService.Heartbeat:Connect(function()
+	pcall(stealTick)
+end))
+
+stealBtn.Activated:Connect(function()
+	autoSteal = not autoSteal
+	stealBtn.Text = "Auto Steal: " .. (autoSteal and "ON" or "OFF")
+	stealBtn.BackgroundColor3 = autoSteal and Color3.fromRGB(40, 110, 60) or Color3.fromRGB(50, 50, 58)
+	if not autoSteal then
+		bankPrompt = nil
+		setStatus("Auto steal off.")
+	else
+		setStatus("Auto steal armed.")
+	end
+end)
+
+local function setRange(v: number)
+	range = math.clamp(v, MIN_RANGE, MAX_RANGE)
+	rangeLabel.Text = "Range: " .. range
+end
+
+rangeMinus.Activated:Connect(function() setRange(range - 5) end)
+rangePlus.Activated:Connect(function() setRange(range + 5) end)
+
+toggleBtn.Activated:Connect(function()
+	main.Visible = not main.Visible
+end)
+
+track(UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.KeyCode == Enum.KeyCode.RightShift then
+		main.Visible = not main.Visible
+	end
+end))
